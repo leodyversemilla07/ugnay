@@ -11,10 +11,14 @@ This is a PlatformIO ESP32 Arduino firmware project. The firmware connects an ES
 - `src/main.cpp` — firmware entry point (orchestration layer)
 - `lib/WiFiManager/` — WiFi connection and status
 - `lib/TelegramBot/` — Telegram polling, messaging, authorization
-- `lib/AiProvider/` — Generic OpenAI-compatible AI provider with conversation history
-- `lib/AiTask/` — FreeRTOS task on core 1 for non-blocking AI calls
-- `platformio.ini` — board, framework, serial, OTA, and dependency configuration
-- `include/config.example.h` — safe template for local configuration
+- `lib/AiProvider/` — Generic OpenAI-compatible AI provider with conversation history and tool-calling
+- `lib/AiTask/` — FreeRTOS task on core 1 for non-blocking AI calls with tool execution
+- `lib/MemoryStore/` — NVS-backed persistent key-value store (auto-injects into system prompt)
+- `lib/ToolDispatcher/` — LLM function-calling to hardware tools (GPIO, PWM, ADC, I2C, system info, memory)
+- `lib/SkillsManager/` — SPIFFS-backed skill definitions with trigger-keyword matching
+- `lib/CronManager/` — FreeRTOS timer-based scheduler with NVS persistence
+- `lib/TelegramBot/` — Telegram polling, messaging, authorization
+- `lib/WiFiManager/` — WiFi connection and status
 - `include/config.h` — local secrets/config; do not commit or print unnecessarily
 
 ## AI provider config

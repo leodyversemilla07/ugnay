@@ -41,3 +41,15 @@
 // ---- Hardware ----
 // Common ESP32 DevKit onboard LED pin. Change if your board uses another pin.
 #define LED_PIN 2
+
+// ---- Runtime Configuration ----
+// The following features are configured at runtime via Telegram commands
+// (stored in NVS/SPIFFS, no #define needed):
+//
+// MemoryStore:     /remember key=value, /forget key, /memory
+// Personality:     /personality <text>, /personality clear
+// Context:         /context <text>, /context clear
+// Skills:          /skill create/list/delete/on/off
+// Cron:            /cron add/list/delete/pause/resume
+//
+// All runtime config survives reboots (NVS/SPIFFS persistence).
