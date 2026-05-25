@@ -1,65 +1,85 @@
 #pragma once
 
+#include <Arduino.h>
 #include <ArduinoJson.h>
 #include <WiFiClientSecure.h>
+#include <HTTPClient.h>
 
 // ---------------------------------------------------------------------------
-// AI provider configuration
-// ---------------------------------------------------------------------------
-// All OpenAI-compatible chat completion providers share the same JSON schema:
+// AiProvider — OpenAI-compatible chat completion client for ESP32.
 //
-//   POST {baseUrl}/v1/chat/completions
-//   Authorization: Bearer {apiKey}
-//   Body: { model, messages: [...], max_tokens, temperature }
-//
-// NVIDIA NIM (cloud): baseUrl="https://integrate.api.nvidia.com",
-//   apiKey="nvapi-...", model="meta/llama-3.1-405b-instruct"
-//
-// OpenRouter: baseUrl="https://openrouter.ai/api",
-//   apiKey="sk-or-v1-...", model="openai/gpt-4o-mini"
+// Supports:
+//   - Conversation history (rolling window, configurable turns)
+//   - System prompt customization
+//   - OpenAI, OpenRouter, NVIDIA NIM, and any compatible endpoint
+//   - Tool calling: callRaw() returns raw JSON for tool_call detection,
+//     callWithToolResults() sends tool results back for follow-up
 // ---------------------------------------------------------------------------
 
 struct AiProviderConfig {
-  const char *baseUrl;    // e.g. "https://integrate.api.nvidia.com"
-  const char *apiKey;     // API key / bearer token
-  const char *model;      // model identifier
+    const char *baseUrl;
+    const char *apiKey;
+    const char *model;
 };
 
-// Maximum conversation turns to keep in memory (user+assistant = 1 turn).
-// 3 turns = 6 messages stored. Each message is a ~200 byte String on average.
+// How many user/assistant turn pairs to keep in conversation history.
 // Total: ~1.2 KB — safe on 320 KB RAM ESP32.
 #define AI_MAX_HISTORY_TURNS 3
 
 class AiProvider {
 public:
-  AiProvider(const AiProviderConfig &config);
-  void begin();
+    AiProvider(const AiProviderConfig &config);
+    void begin();
 
-  // Send a message and get a reply. History is automatically tracked.
-  String call(const String &userText, unsigned long timeoutMs = 65000);
+    // Send a message and get a text reply. History is automatically tracked.
+    // Returns the assistant's text content (no JSON wrapper).
+    String call(const String &userText, unsigned long timeoutMs = 65000);
 
-  // System prompt can be overridden at runtime
-  void setSystemPrompt(const String &prompt);
+    // Send a message and get the RAW JSON response from the API.
+    // Use this for tool calling — check for tool_calls in the response.
+    // History is NOT updated automatically (call updateHistory() after).
+    String callRaw(const String &userText, const String &toolsJson = "",
+                   unsigned long timeoutMs = 65000);
 
-  // Clear conversation history (e.g. on /start or error)
-  void clearHistory();
+    // Send tool results back to the LLM for a follow-up response.
+    // toolResultsJson is a JSON array of tool result messages.
+    // Returns the raw JSON response from the API.
+    String callWithToolResults(const String &toolResultsJson,
+                               unsigned long timeoutMs = 65000);
 
-  // Set max turns. Higher = more context but more memory + tokens.
-  void setMaxHistoryTurns(int turns);
+    // Manually update conversation history after a successful exchange
+    void updateHistory(const String &userText, const String &assistantContent);
+
+    // System prompt can be overridden at runtime
+    void setSystemPrompt(const String &prompt);
+
+    // Clear conversation history (e.g. on /start or error)
+    void clearHistory();
+
+    // Set max turns. Higher = more context but more memory + tokens.
+    void setMaxHistoryTurns(int turns);
+
+    // Get the current system prompt
+    String getSystemPrompt() const { return _systemPrompt; }
 
 private:
-  AiProviderConfig _config;
-  WiFiClientSecure _client;
-  String _systemPrompt;
+    AiProviderConfig _config;
+    WiFiClientSecure _client;
+    String _systemPrompt;
 
-  // Rolling conversation history: alternating "user" / "assistant" role strings and content Strings.
-  // Stored as parallel arrays to avoid heap-fragmenting struct allocations.
-  String _historyRoles[AI_MAX_HISTORY_TURNS * 2];
-  String _historyContent[AI_MAX_HISTORY_TURNS * 2];
-  int _historyCount;       // number of stored messages
-  int _maxHistoryTurns;    // max user+assistant pairs
+    // Rolling conversation history
+    String _historyRoles[AI_MAX_HISTORY_TURNS * 2];
+    String _historyContent[AI_MAX_HISTORY_TURNS * 2];
+    int _historyCount;
+    int _maxHistoryTurns;
 
-  String _jsonEscape(const String &s);
-  String _extractContent(const String &jsonResponse, int httpCode, int responseBytes);
-  void _trimHistory();
+    // Pending assistant message with tool_calls (stored between callRaw and callWithToolResults)
+    String _pendingAssistantJson;
+
+    String _jsonEscape(const String &s);
+    String _extractContent(const String &jsonResponse, int httpCode, int responseBytes);
+    void _trimHistory();
+
+    // Build the messages array for a request
+    String _buildMessagesJson(const String &userText);
 };
