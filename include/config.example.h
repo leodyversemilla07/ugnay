@@ -53,3 +53,8 @@
 // Cron:            /cron add/list/delete/pause/resume
 //
 // All runtime config survives reboots (NVS/SPIFFS persistence).
+
+// ---- Hardware ----
+// Some boards wire the LED as active-low. If /led on says ON but the LED is off,
+// try setting this to true in include/config.h.
+#define LED_ACTIVE_LOW false

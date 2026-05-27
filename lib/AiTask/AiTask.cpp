@@ -1,7 +1,8 @@
 #include "AiTask.h"
+#include <new>
 
 AiTask::AiTask(AiProvider &ai, TelegramBot &bot)
-    : _ai(ai), _bot(bot), _tools(nullptr), _taskHandle(nullptr) {
+    : _ai(ai), _bot(bot), _tools(nullptr), _taskHandle(nullptr), _activeChatId("") {
     _queue = xQueueCreate(QUEUE_SIZE, sizeof(AiTaskMessage *));
 }
 
@@ -15,7 +16,12 @@ AiTask::~AiTask() {
 }
 
 void AiTask::begin() {
-    xTaskCreatePinnedToCore(
+    if (!_queue) {
+        Serial.println("[AiTask] Queue creation failed; AI task not started");
+        return;
+    }
+
+    BaseType_t ok = xTaskCreatePinnedToCore(
         _taskFunc,     // task function
         "AiTask",      // name
         12288,         // stack size (bytes) — increased for JSON + tool processing
@@ -24,6 +30,11 @@ void AiTask::begin() {
         &_taskHandle,  // task handle
         1              // core 1 (core 0 = WiFi/Telegram)
     );
+
+    if (ok != pdPASS) {
+        _taskHandle = nullptr;
+        Serial.println("[AiTask] Task creation failed");
+    }
 }
 
 void AiTask::setToolDispatcher(ToolDispatcher &dispatcher) {
@@ -33,7 +44,10 @@ void AiTask::setToolDispatcher(ToolDispatcher &dispatcher) {
 bool AiTask::enqueue(const String &chatId, const String &text) {
     if (!_queue) return false;
 
-    AiTaskMessage *msg = new AiTaskMessage();
+    // Allocate on heap; the task will free it
+    AiTaskMessage *msg = new (std::nothrow) AiTaskMessage();
+    if (!msg) return false;
+
     msg->chatId = chatId;
     msg->text = text;
 
@@ -151,6 +165,14 @@ void AiTask::_run() {
     while (true) {
         if (xQueueReceive(_queue, &msg, portMAX_DELAY) == pdTRUE) {
             if (!msg) continue;
+
+            // Keep conversation history isolated per chat.
+            // If unrestricted Telegram access is enabled, switching chats starts a fresh context.
+            if (_activeChatId.length() > 0 && _activeChatId != msg->chatId) {
+                _ai.clearHistory();
+                Serial.println("[AiTask] Chat changed; AI history cleared");
+            }
+            _activeChatId = msg->chatId;
 
             _bot.sendThinking(msg->chatId);
 

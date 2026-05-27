@@ -2,6 +2,7 @@
 
 #include <ArduinoJson.h>
 #include <WiFiClientSecure.h>
+#include <freertos/semphr.h>
 #include <functional>
 
 class TelegramBot {
@@ -24,10 +25,12 @@ private:
   long _offset;
   unsigned long _lastPollMs;
   unsigned long _pollIntervalMs;
-  WiFiClientSecure _client;
+  SemaphoreHandle_t _networkMutex;
   MessageHandler _handler;
 
   String _baseUrl();
+  bool _lockNetwork(unsigned long timeoutMs = 10000);
+  void _unlockNetwork();
   void _handleUpdate(JsonObject update);
   bool _isAuthorized(const String &chatId);
 };

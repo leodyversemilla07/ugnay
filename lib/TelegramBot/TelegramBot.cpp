@@ -4,13 +4,16 @@
 
 TelegramBot::TelegramBot(const char *token, const char *allowedChatId, int ledPin)
   : _token(token), _allowedChatId(allowedChatId), _ledPin(ledPin),
-    _offset(0), _lastPollMs(0), _pollIntervalMs(2500), _handler(nullptr) {
+    _offset(0), _lastPollMs(0), _pollIntervalMs(2500),
+    _networkMutex(xSemaphoreCreateMutex()), _handler(nullptr) {
   pinMode(_ledPin, OUTPUT);
   digitalWrite(_ledPin, LOW);
 }
 
 void TelegramBot::begin() {
-  _client.setInsecure();
+  if (!_networkMutex) {
+    _networkMutex = xSemaphoreCreateMutex();
+  }
 }
 
 String TelegramBot::_baseUrl() {
@@ -19,6 +22,18 @@ String TelegramBot::_baseUrl() {
 
 bool TelegramBot::_isAuthorized(const String &chatId) {
   return String(_allowedChatId).length() == 0 || chatId == String(_allowedChatId);
+}
+
+bool TelegramBot::_lockNetwork(unsigned long timeoutMs) {
+  if (!_networkMutex) return true;
+  TickType_t ticks = timeoutMs == portMAX_DELAY ? portMAX_DELAY : pdMS_TO_TICKS(timeoutMs);
+  return xSemaphoreTake(_networkMutex, ticks) == pdTRUE;
+}
+
+void TelegramBot::_unlockNetwork() {
+  if (_networkMutex) {
+    xSemaphoreGive(_networkMutex);
+  }
 }
 
 void TelegramBot::onMessage(MessageHandler handler) {
@@ -30,14 +45,8 @@ long TelegramBot::getOffset() {
 }
 
 void TelegramBot::sendMessage(const String &chatId, const String &text) {
-  if (!_client.connected() && !_client.connect("api.telegram.org", 443)) return;
-
   for (int start = 0; start < text.length(); start += 3500) {
     String chunk = text.substring(start, min(start + 3500, (int)text.length()));
-    HTTPClient http;
-    String url = _baseUrl() + "/sendMessage";
-    http.begin(_client, url);
-    http.addHeader("Content-Type", "application/json");
 
     // Escape special characters for JSON
     String escaped;
@@ -55,12 +64,32 @@ void TelegramBot::sendMessage(const String &chatId, const String &text) {
     }
 
     String body = "{\"chat_id\":\"" + chatId + "\",\"text\":\"" + escaped + "\"}";
+
+    if (!_lockNetwork()) {
+      Serial.println("Telegram send skipped: network busy");
+      return;
+    }
+
+    WiFiClientSecure client;
+    client.setInsecure();
+
+    HTTPClient http;
+    String url = _baseUrl() + "/sendMessage";
+    if (!http.begin(client, url)) {
+      Serial.println("Telegram send failed: HTTP begin failed");
+      _unlockNetwork();
+      return;
+    }
+    http.addHeader("Content-Type", "application/json");
+
     int code = http.POST(body);
     if (code < 200 || code >= 300) {
       Serial.printf("Telegram send failed: HTTP %d\n", code);
       Serial.println(http.getString());
     }
     http.end();
+    _unlockNetwork();
+
     delay(200);
   }
 }
@@ -74,16 +103,35 @@ void TelegramBot::poll() {
   if (now - _lastPollMs < _pollIntervalMs) return;
   _lastPollMs = now;
 
+  if (!_lockNetwork(1000)) {
+    Serial.println("Telegram poll skipped: network busy");
+    return;
+  }
+
+  WiFiClientSecure client;
+  client.setInsecure();
+
   HTTPClient http;
-  String url = _baseUrl() + "/getUpdates?offset=" + String(_offset) + "&timeout=0";
-  http.begin(_client, url);
+  String url = _baseUrl() + "/getUpdates?offset=" + String(_offset) + "&timeout=0&allowed_updates=%5B%22message%22%5D";
+  if (!http.begin(client, url)) {
+    Serial.println("Telegram poll failed: HTTP begin failed");
+    _unlockNetwork();
+    return;
+  }
   int code = http.GET();
   String response = http.getString();
   http.end();
+  _unlockNetwork();
 
   if (code != 200) {
     Serial.printf("Telegram poll failed: HTTP %d\n", code);
     Serial.println(response);
+
+    // Telegram returns 409 if another getUpdates request is active.
+    // Back off longer so the old request can expire instead of hammering the API.
+    if (code == 409) {
+      _lastPollMs = millis() + 10000;
+    }
     return;
   }
 

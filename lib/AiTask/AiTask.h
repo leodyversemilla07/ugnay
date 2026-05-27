@@ -50,6 +50,7 @@ private:
     ToolDispatcher *_tools;
     TaskHandle_t _taskHandle;
     QueueHandle_t _queue;
+    String _activeChatId;
 
     static const int QUEUE_SIZE = 3;
     static const int MAX_TOOL_ROUNDS = 3;

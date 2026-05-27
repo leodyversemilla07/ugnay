@@ -8,8 +8,9 @@ AiProvider::AiProvider(const AiProviderConfig &config)
         "You are a concise AI agent connected to an ESP32 DevKit. "
         "Reply with the final answer only. Do not show hidden reasoning. "
         "Keep replies under 60 words unless the user asks for detail. "
-        "The ESP32 can respond on Telegram and has commands: /status, /led on, /led off, /led toggle. "
-        "If the user wants hardware action, tell them the exact command to send.";
+        "For greetings like hello or hi, greet the user naturally and say you are online. "
+        "The ESP32 handles LED control directly when the user asks to turn the LED/light on, off, or toggle it. "
+        "Available local commands: /status, /led on|off|toggle|test, /remember, /forget, /memory, /skill, /cron, /personality, /context.";
 }
 
 void AiProvider::begin() {
@@ -21,6 +22,10 @@ void AiProvider::setSystemPrompt(const String &prompt) {
 }
 
 void AiProvider::clearHistory() {
+    for (int i = 0; i < AI_MAX_HISTORY_TURNS * 2; i++) {
+        _historyRoles[i] = "";
+        _historyContent[i] = "";
+    }
     _historyCount = 0;
 }
 
@@ -32,20 +37,41 @@ void AiProvider::setMaxHistoryTurns(int turns) {
 }
 
 void AiProvider::_trimHistory() {
-    int maxMessages = _maxHistoryTurns * 2;
+    int maxMessages = _maxHistoryTurns * 2; // each turn = user + assistant
+    if (maxMessages <= 0) {
+        clearHistory();
+        return;
+    }
+
     if (_historyCount > maxMessages) {
         int remove = _historyCount - maxMessages;
         for (int i = 0; i < maxMessages; i++) {
             _historyRoles[i] = _historyRoles[i + remove];
             _historyContent[i] = _historyContent[i + remove];
         }
+        for (int i = maxMessages; i < AI_MAX_HISTORY_TURNS * 2; i++) {
+            _historyRoles[i] = "";
+            _historyContent[i] = "";
+        }
         _historyCount = maxMessages;
     }
 }
 
 void AiProvider::updateHistory(const String &userText, const String &assistantContent) {
-    _trimHistory();
     int maxMessages = _maxHistoryTurns * 2;
+    if (maxMessages <= 0) return;
+
+    // Make room for the new user+assistant exchange before appending.
+    while (_historyCount + 2 > maxMessages) {
+        for (int i = 0; i < _historyCount - 1; i++) {
+            _historyRoles[i] = _historyRoles[i + 1];
+            _historyContent[i] = _historyContent[i + 1];
+        }
+        _historyCount--;
+        _historyRoles[_historyCount] = "";
+        _historyContent[_historyCount] = "";
+    }
+
     if (_historyCount < maxMessages) {
         _historyRoles[_historyCount] = "user";
         _historyContent[_historyCount] = userText;
@@ -102,7 +128,10 @@ String AiProvider::_extractContent(const String &trimmed, int httpCode, int resp
         return "AI provider returned non-JSON data (HTTP " + String(httpCode) + ", bytes " + String(responseBytes) + "): " + preview;
     }
 
-    DynamicJsonDocument doc(32768);
+    size_t parseCapacity = max((size_t)4096, (size_t)trimmed.length() * 2 + 1024);
+    if (parseCapacity > 32768) parseCapacity = 32768;
+
+    DynamicJsonDocument doc(parseCapacity);
     DeserializationError err = deserializeJson(doc, trimmed);
     if (err) {
         String preview = trimmed.substring(0, min(120, (int)trimmed.length()));
@@ -126,7 +155,9 @@ String AiProvider::call(const String &userText, unsigned long timeoutMs) {
     String endpoint = String(_config.baseUrl) + "/v1/chat/completions";
 
     HTTPClient http;
-    http.begin(_client, endpoint);
+    if (!http.begin(_client, endpoint)) {
+        return "AI provider error: HTTP begin failed.";
+    }
     http.setTimeout(timeoutMs);
     http.addHeader("Content-Type", "application/json");
     http.addHeader("Authorization", String("Bearer ") + _config.apiKey);
@@ -139,7 +170,7 @@ String AiProvider::call(const String &userText, unsigned long timeoutMs) {
     // Build request body
     String messagesJson = _buildMessagesJson(userText);
     String body = "{\"model\":\"" + String(_config.model) + "\","
-                  "\"max_tokens\":900,"
+                  "\"max_tokens\":500,"
                   "\"temperature\":0.3,"
                   "\"messages\":" + messagesJson + "}";
 
@@ -176,7 +207,9 @@ String AiProvider::callRaw(const String &userText, const String &toolsJson,
     String endpoint = String(_config.baseUrl) + "/v1/chat/completions";
 
     HTTPClient http;
-    http.begin(_client, endpoint);
+    if (!http.begin(_client, endpoint)) {
+        return "{\"error\": \"HTTP begin failed\"}";
+    }
     http.setTimeout(timeoutMs);
     http.addHeader("Content-Type", "application/json");
     http.addHeader("Authorization", String("Bearer ") + _config.apiKey);
@@ -189,7 +222,7 @@ String AiProvider::callRaw(const String &userText, const String &toolsJson,
     // Build request body with optional tools
     String messagesJson = _buildMessagesJson(userText);
     String body = "{\"model\":\"" + String(_config.model) + "\","
-                  "\"max_tokens\":900,"
+                  "\"max_tokens\":500,"
                   "\"temperature\":0.3,"
                   "\"messages\":" + messagesJson;
 
@@ -228,7 +261,9 @@ String AiProvider::callWithToolResults(const String &toolResultsJson,
     String endpoint = String(_config.baseUrl) + "/v1/chat/completions";
 
     HTTPClient http;
-    http.begin(_client, endpoint);
+    if (!http.begin(_client, endpoint)) {
+        return "AI provider error on tool follow-up: HTTP begin failed.";
+    }
     http.setTimeout(timeoutMs);
     http.addHeader("Content-Type", "application/json");
     http.addHeader("Authorization", String("Bearer ") + _config.apiKey);
