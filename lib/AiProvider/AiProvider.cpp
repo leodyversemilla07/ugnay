@@ -243,14 +243,39 @@ String AiProvider::callRaw(const String &userText, const String &toolsJson,
         return "{\"error\": \"HTTP " + String(code) + "\", \"detail\": \"" + _jsonEscape(response.substring(0, 200)) + "\"}";
     }
 
-    // Store the assistant message (which may contain tool_calls) for later use
+    // Store a sanitized assistant message (may include tool_calls) for follow-up.
+    // Some providers reject extra nullable fields from the raw response message.
     DynamicJsonDocument doc(16384);
     DeserializationError err = deserializeJson(doc, response);
-    if (err == DeserializationError::Ok && doc.containsKey("choices")) {
+    if (err == DeserializationError::Ok &&
+        doc.containsKey("choices") &&
+        doc["choices"][0].containsKey("message")) {
         JsonObject msg = doc["choices"][0]["message"];
+
+        DynamicJsonDocument cleanDoc(12288);
+        JsonObject clean = cleanDoc.to<JsonObject>();
+        clean["role"] = msg["role"] | "assistant";
+
+        if (msg.containsKey("content") && !msg["content"].isNull()) {
+            clean["content"] = msg["content"].as<String>();
+        } else {
+            // Tool-call assistant messages may have null content. Keep it explicit.
+            clean["content"] = "";
+        }
+
+        if (msg.containsKey("tool_calls") && !msg["tool_calls"].isNull()) {
+            clean["tool_calls"] = msg["tool_calls"];
+        }
+
+        if (msg.containsKey("name") && !msg["name"].isNull()) {
+            clean["name"] = msg["name"].as<String>();
+        }
+
         String assistantJson;
-        serializeJson(msg, assistantJson);
+        serializeJson(clean, assistantJson);
         _pendingAssistantJson = assistantJson;
+    } else {
+        _pendingAssistantJson = "";
     }
 
     return response;
@@ -289,8 +314,18 @@ String AiProvider::callWithToolResults(const String &toolResultsJson,
         messages += "," + _pendingAssistantJson;
     }
 
-    // 4. Tool result messages
-    messages += "," + toolResultsJson;
+    // 4. Tool result messages.
+    // AiTask passes an array string like: [{...},{...}].
+    // messages must be a flat array of message objects, not a nested array.
+    String toolMsgs = toolResultsJson;
+    toolMsgs.trim();
+    if (toolMsgs.startsWith("[") && toolMsgs.endsWith("]") && toolMsgs.length() >= 2) {
+        toolMsgs = toolMsgs.substring(1, toolMsgs.length() - 1);
+        toolMsgs.trim();
+    }
+    if (toolMsgs.length() > 0) {
+        messages += "," + toolMsgs;
+    }
 
     messages += "]";
 
@@ -307,7 +342,10 @@ String AiProvider::callWithToolResults(const String &toolResultsJson,
         _config.baseUrl, code, response.length());
 
     if (code < 200 || code >= 300) {
-        return "AI provider error on tool follow-up HTTP " + String(code);
+        _pendingAssistantJson = "";
+        String detail = response.substring(0, 180);
+        detail.replace("\n", " ");
+        return "AI provider error on tool follow-up HTTP " + String(code) + ": " + detail;
     }
 
     String trimmed = response;
